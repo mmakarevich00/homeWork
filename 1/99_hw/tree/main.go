@@ -34,35 +34,31 @@ func printer(out io.Writer, path string, printFiles bool, prefix string) (err er
 	}
 
 	var packages []fs.DirEntry
-	var files []fs.DirEntry
-	var separator string
 
 	for _, item := range catalog {
-		if item.IsDir() {
+		if item.IsDir() || printFiles {
 			packages = append(packages, item)
-		} else {
-			files = append(files, item)
 		}
 	}
 
-	var packagesAndFiles = append(packages, files...)
-
-	sort.Slice(packagesAndFiles, func(i, j int) bool {
-		return packagesAndFiles[i].Name() < packagesAndFiles[j].Name()
+	sort.Slice(packages, func(i, j int) bool {
+		return packages[i].Name() < packages[j].Name()
 	})
 
-	for i, item := range packagesAndFiles {
+	for i, item := range packages {
 		var fileName = item.Name()
-		separator += "├───"
-		if i == len(packagesAndFiles)-1 {
-			separator += "└───"
+		separator := "├───"
+		if i == len(packages)-1 {
+			separator = "└───"
 		}
 		if item.IsDir() {
+			fmt.Fprintf(out, "%s%s%s\n", prefix, separator, fileName)
+
 			newPrefix := prefix
-			if i == len(packagesAndFiles)-1 {
-				newPrefix += "    "
+			if i == len(packages)-1 {
+				newPrefix += "\t"
 			} else {
-				newPrefix += "│   "
+				newPrefix += "│\t"
 			}
 			err := printer(out, path+"/"+item.Name(), printFiles, newPrefix)
 			if err != nil {
@@ -77,11 +73,11 @@ func printer(out io.Writer, path string, printFiles bool, prefix string) (err er
 			if size == 0 {
 				fileName += " (empty)"
 			} else {
-				fileName += "(" + strconv.Itoa(int(size)) + "b)"
+				fileName += " (" + strconv.Itoa(int(size)) + "b)"
 			}
+			fmt.Fprintf(out, "%s%s%s\n", prefix, separator, fileName)
 		}
 
-		fmt.Fprintf(out, "%s%s%s\n", prefix, separator, fileName)
 	}
 	return nil
 }
