@@ -1,13 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"github.com/mailru/easyjson"
 	"hw3/user"
 	"io"
-	"io/ioutil"
 	"os"
-	"regexp"
 	"strings"
 )
 
@@ -17,20 +16,15 @@ func FastSearch(out io.Writer) {
 		panic(err)
 	}
 
-	fileContents, err := ioutil.ReadAll(file)
-	if err != nil {
-		panic(err)
-	}
-
-	r := regexp.MustCompile("@")
+	scanner := bufio.NewScanner(file)
 	seenBrowsers := []string{}
 	uniqueBrowsers := 0
 	foundUsers := ""
-
-	lines := strings.Split(string(fileContents), "\n")
+	var i = 0
 	var users []user.User
 
-	for i, line := range lines {
+	for scanner.Scan() {
+		line := scanner.Text()
 		user := user.User{}
 		err := easyjson.Unmarshal([]byte(line), &user)
 		if err != nil {
@@ -42,7 +36,6 @@ func FastSearch(out io.Writer) {
 		isMSIE := false
 
 		for _, browser := range user.Browser {
-			err := easyjson.Unmarshal([]byte(line), &user)
 			if err != nil {
 				continue
 			}
@@ -73,9 +66,10 @@ func FastSearch(out io.Writer) {
 			}
 		}
 		if isMSIE && isAndroid {
-			email := r.ReplaceAllString(user.Email, " [at] ")
+			email := strings.ReplaceAll(user.Email, "@", " [at] ")
 			foundUsers += fmt.Sprintf("[%d] %s <%s>\n", i, user.Name, email)
 		}
+		i++
 	}
 
 	fmt.Fprintln(out, "found users:\n"+foundUsers)
