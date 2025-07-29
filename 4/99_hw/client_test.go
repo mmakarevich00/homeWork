@@ -23,14 +23,8 @@ type UserInfo struct {
 		LastName  string `xml:"last_name"`
 		Age       int    `xml:"age"`
 		About     string `xml:"about"`
+		Gender    string `xml:"gender"`
 	} `xml:"row"`
-}
-
-type UserData struct {
-	Id    int
-	Name  string
-	Age   int
-	About string
 }
 
 func main() {
@@ -39,9 +33,16 @@ func main() {
 }
 
 func SearchServer(w http.ResponseWriter, r *http.Request) {
+	token := r.Header.Get("AccessToken")
+	if token != validToken {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 	file, err := os.ReadFile(filePath)
 	if err != nil {
-		panic(err)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]User{})
+		return
 	}
 
 	var user UserInfo
@@ -50,13 +51,14 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 		panic(err)
 	}
 
-	var users []UserData
+	var users []User
 	for _, u := range user.User {
-		users = append(users, UserData{
-			Id:    u.Id,
-			Name:  u.FirstName + " " + u.LastName,
-			Age:   u.Age,
-			About: u.About,
+		users = append(users, User{
+			Id:     u.Id,
+			Name:   u.FirstName + " " + u.LastName,
+			Age:    u.Age,
+			About:  u.About,
+			Gender: u.Gender,
 		})
 	}
 
@@ -67,23 +69,33 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 	limit := params.Get("limit")
 	offset := params.Get("offset")
 
-	var queryFilter []UserData
+	var queryFilter []User
 	for _, u := range users {
 		if query == "" || strings.Contains(u.Name, query) || strings.Contains(u.About, query) {
 			queryFilter = append(queryFilter, u)
 		}
+	}
+	if query != "" && len(queryFilter) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(SearchErrorResponse{
+			Error: "unsupported query",
+		})
 	}
 
 	var order int
 	switch orderBy {
 	case "-1":
 		order = OrderByAsc
-	case "0":
+	case "0", "":
 		order = OrderByAsIs
 	case "1":
 		order = OrderByDesc
 	default:
-		orderBy = ErrorBadOrderField
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(SearchErrorResponse{
+			Error: ErrorBadOrderField,
+		})
+		return
 	}
 
 	if order != OrderByAsIs {
@@ -109,15 +121,32 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 				}
 				return queryFilter[i].Name > queryFilter[j].Name
 			})
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(SearchErrorResponse{
+				Error: "Invalid OrderField"})
 		}
 	}
 
 	limitCount := len(queryFilter)
 	if limit != "" {
-		if l, err := strconv.Atoi(limit); err == nil && l >= 0 {
-			if l < limitCount {
-				limitCount = l
-			}
+		l, err := strconv.Atoi(limit)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(SearchErrorResponse{
+				Error: "unsupported limit",
+			})
+			return
+		}
+		if l == 0 || l < 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(SearchErrorResponse{
+				Error: "limit not must be null",
+			})
+			return
+		}
+		if l > 0 {
+			limitCount = l
 		}
 	}
 
@@ -126,14 +155,23 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 		if o, err := strconv.Atoi(offset); err == nil && o >= 0 && o < len(queryFilter) {
 			offsetCount = o
 		}
-
 	}
 
-	result := queryFilter
+	start := offsetCount
+	if start > len(queryFilter) {
+		start = len(queryFilter)
+	}
+
+	end := start + limitCount
+	if end > len(queryFilter) {
+		end = len(queryFilter)
+	}
+
+	result := queryFilter[start:end]
 	if offsetCount < len(result) {
 		result = result[offsetCount:]
 	} else {
-		result = []UserData{}
+		result = []User{}
 	}
 	if limitCount < len(result) {
 		result = result[:limitCount]
@@ -155,16 +193,22 @@ type TestCase struct {
 }
 
 var validToken = "valid_token"
-var searchName = "Leanna Travis"
+var searchName = "Boyd Wolf"
 var invalidSearchName = "fsfjklsjfsklfjslfjsl"
-var searchAbout = "Lorem"
+var searchAbout = "Nulla cillum"
 var invalidSearchAbout = "jfksljfklsjfslkfsj"
+var userMock = User{
+	Id:     0,
+	Name:   "Boyd Wolf",
+	Age:    22,
+	About:  "Nulla cillum enim voluptate consequat laborum esse excepteur occaecat commodo nostrud excepteur ut cupidatat. Occaecat minim incididunt ut proident ad sint nostrud ad laborum sint pariatur. Ut nulla commodo dolore officia. Consequat anim eiusmod amet commodo eiusmod deserunt culpa. Ea sit dolore nostrud cillum proident nisi mollit est Lorem pariatur. Lorem aute officia deserunt dolor nisi aliqua consequat nulla nostrud ipsum irure id deserunt dolore. Minim reprehenderit nulla exercitation labore ipsum.\n",
+	Gender: "male",
+}
 
 func TestSearchUser(t *testing.T) {
 	cases := []TestCase{
 		{
-			ID:      "success result",
-			Request: SearchRequest{},
+			ID: "0. success result",
 			Response: &SearchResponse{
 				Users:    []User{},
 				NextPage: true,
@@ -173,48 +217,26 @@ func TestSearchUser(t *testing.T) {
 			isError: false,
 		},
 		{
-			ID:      "without token",
-			Token:   "",
+			ID:      "1. without token",
+			Token:   " ",
 			Request: SearchRequest{},
 			isError: true,
 		},
 		{
-			ID:      "invalid token",
+			ID:      "2. invalid token",
 			Token:   "invalid_token",
 			Request: SearchRequest{},
 			isError: true,
 		},
 		{
-			ID: "limit = 0",
-			Request: SearchRequest{
-				Limit: 0,
-			},
-			Response: &SearchResponse{
-				Users:    []User{},
-				NextPage: false,
-			},
-			isError: false,
-		},
-		{
-			ID: "limit = 25",
-			Request: SearchRequest{
-				Limit: 25,
-			},
-			Response: &SearchResponse{
-				Users:    []User{},
-				NextPage: true,
-			},
-			isError: false,
-		},
-		{
-			ID: "limit = -1",
+			ID: "3. limit = -1",
 			Request: SearchRequest{
 				Limit: -1,
 			},
 			isError: true,
 		},
 		{
-			ID: "offset = 0",
+			ID: "4. offset = 0",
 			Request: SearchRequest{
 				Offset: 0,
 			},
@@ -225,28 +247,16 @@ func TestSearchUser(t *testing.T) {
 			isError: false,
 		},
 		{
-			ID: "offset = 5",
-			Request: SearchRequest{
-				Offset: 5,
-			},
-			Response: &SearchResponse{
-				Users:    []User{},
-				NextPage: true,
-			},
-			isError: false,
-		},
-		{
-			ID: "offset = -1",
+			ID: "5. offset = -1",
 			Request: SearchRequest{
 				Offset: -1,
 			},
 			isError: true,
 		},
 		{
-			ID: "Order by Name",
+			ID: "6. Order by Name",
 			Request: SearchRequest{
-				Query:      searchName,
-				OrderBy:    0,
+				OrderBy:    1,
 				OrderField: "Name",
 			},
 			Response: &SearchResponse{
@@ -256,7 +266,7 @@ func TestSearchUser(t *testing.T) {
 			isError: false,
 		},
 		{
-			ID: "Order by Age",
+			ID: "7. Order by Age",
 			Request: SearchRequest{
 				OrderBy:    0,
 				OrderField: "Age",
@@ -268,7 +278,7 @@ func TestSearchUser(t *testing.T) {
 			isError: false,
 		},
 		{
-			ID: "Order by Id",
+			ID: "8. Order by Id",
 			Request: SearchRequest{
 				OrderBy:    0,
 				OrderField: "Id",
@@ -280,7 +290,7 @@ func TestSearchUser(t *testing.T) {
 			isError: false,
 		},
 		{
-			ID: "Check order as is",
+			ID: "9. Check order as is",
 			Request: SearchRequest{
 				OrderBy:    0,
 				OrderField: "Id",
@@ -292,7 +302,7 @@ func TestSearchUser(t *testing.T) {
 			isError: false,
 		},
 		{
-			ID: "Check order by asc",
+			ID: "10. Check order by asc",
 			Request: SearchRequest{
 				OrderField: "Id",
 				OrderBy:    -1,
@@ -304,7 +314,7 @@ func TestSearchUser(t *testing.T) {
 			isError: false,
 		},
 		{
-			ID: "Check order by desc",
+			ID: "11. Check order by desc",
 			Request: SearchRequest{
 				OrderField: "Id",
 				OrderBy:    1,
@@ -316,54 +326,65 @@ func TestSearchUser(t *testing.T) {
 			isError: false,
 		},
 		{
-			ID: "Search by query Name",
+			ID: "12. Search by query Name",
 			Request: SearchRequest{
 				Query: searchName,
+				Limit: 1,
 			},
 			Response: &SearchResponse{
 				Users: []User{
-					{
-						Name: searchName,
-					},
+					userMock,
 				},
 				NextPage: false,
 			},
 			isError: false,
 		},
 		{
-			ID: "Search by query About",
+			ID: "13. Search by query About",
 			Request: SearchRequest{
+				Limit: 1,
 				Query: searchAbout,
 			},
 			Response: &SearchResponse{
 				Users: []User{
-					{
-						About: searchAbout,
-					},
+					userMock,
 				},
 				NextPage: false,
 			},
 			isError: false,
 		},
 		{
-			ID: "InvalidSearch by query About",
+			ID: "14. InvalidSearch by query About",
 			Request: SearchRequest{
 				Query: invalidSearchAbout,
-			},
-			Response: &SearchResponse{
-				Users:    []User{},
-				NextPage: false,
 			},
 			isError: true,
 		},
 		{
-			ID: "InvalidSearch by query Name",
+			ID: "15. InvalidSearch by query Name",
 			Request: SearchRequest{
 				Query: invalidSearchName,
 			},
-			Response: &SearchResponse{
-				Users:    []User{},
-				NextPage: false,
+			isError: true,
+		},
+		{
+			ID:      "16. Empty token",
+			Token:   "\x00",
+			Request: SearchRequest{},
+			isError: true,
+		},
+		{
+			ID: "17. Invalid Order by",
+			Request: SearchRequest{
+				OrderBy: 10,
+			},
+			isError: true,
+		},
+		{
+			ID: "18. Invalid OrderField",
+			Request: SearchRequest{
+				OrderBy:    1,
+				OrderField: "Invalid",
 			},
 			isError: true,
 		},
@@ -377,7 +398,7 @@ func TestSearchUser(t *testing.T) {
 			token = validToken
 		}
 		c := SearchClient{
-			AccessToken: validToken,
+			AccessToken: token,
 			URL:         ts.URL,
 		}
 		result, err := c.FindUsers(item.Request)
