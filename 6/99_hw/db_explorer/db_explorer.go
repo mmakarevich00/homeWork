@@ -9,40 +9,36 @@ import (
 	"strings"
 )
 
-type DbExplorer struct {
+type DBExplorer struct {
 	db     *sql.DB
 	tables map[string]Table
 }
-
 type Table struct {
 	Name       string
 	Columns    []Column
 	PrimaryKey string
 }
-
 type Column struct {
-	Name      string
-	Type      string
-	Nullable  bool
-	IsPrimary bool
-	IsAuto    bool
+	Name         string
+	Type         string
+	IsNullable   bool
+	IsPrimaryKey bool
 }
 
 func NewDbExplorer(db *sql.DB) (http.Handler, error) {
-	explorer := &DbExplorer{
+	explorer := &DBExplorer{
 		db:     db,
 		tables: make(map[string]Table),
 	}
 
-	err := explorer.loadTables()
+	err := explorer.loadTable()
 	if err != nil {
 		return nil, err
 	}
-
 	return explorer, nil
 }
 
-func (dbe *DbExplorer) loadTables() error {
+func (dbe *DBExplorer) loadTable() error {
 	rows, err := dbe.db.Query("SHOW TABLES")
 	if err != nil {
 		return err
@@ -62,11 +58,10 @@ func (dbe *DbExplorer) loadTables() error {
 		}
 		dbe.tables[tableName] = table
 	}
-
 	return nil
 }
 
-func (dbe *DbExplorer) getTableStructure(tableName string) (Table, error) {
+func (dbe *DBExplorer) getTableStructure(tableName string) (Table, error) {
 	table := Table{
 		Name:    tableName,
 		Columns: []Column{},
@@ -83,57 +78,45 @@ func (dbe *DbExplorer) getTableStructure(tableName string) (Table, error) {
 		rows.Scan(&field, &colType, &collation, &null, &key, &defaultVal, &extra, &privileges, &comment)
 
 		column := Column{
-			Name:      field.String,
-			Type:      colType.String,
-			Nullable:  null.String == "YES",
-			IsPrimary: key.String == "PRI",
-			IsAuto:    strings.Contains(extra.String, "auto_increment"),
+			Name:         field.String,
+			Type:         colType.String,
+			IsNullable:   null.String == "YES",
+			IsPrimaryKey: key.String == "PRI",
 		}
-
 		table.Columns = append(table.Columns, column)
 
-		if column.IsPrimary {
+		if column.IsPrimaryKey {
 			table.PrimaryKey = column.Name
 		}
 	}
-
 	return table, nil
 }
 
-func (dbe *DbExplorer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (dbe *DBExplorer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	path := strings.Trim(r.URL.Path, "/")
-	parts := strings.Split(path, "/")
+	splitPath := strings.Split(path, "/")
 
-	if path == "" {
-		dbe.showTables(w)
-		return
-	}
-
-	tableName := parts[0]
-	if _, exists := dbe.tables[tableName]; !exists {
-		dbe.sendError(w, "unknown table", 404)
-		return
-	}
+	tableName := splitPath[0]
 
 	switch r.Method {
 	case "GET":
-		if len(parts) == 1 {
+		if len(splitPath) == 1 {
 			dbe.showData(w, r, tableName)
 		} else {
-			dbe.showDataById(w, r, tableName, parts[1])
+			dbe.showDataById(w, r, tableName, splitPath[1])
 		}
 	case "PUT":
 		dbe.createData(w, r, tableName)
 	case "POST":
-		dbe.updateData(w, r, tableName, parts[1])
+		dbe.updateData(w, r, tableName, splitPath[1])
 	case "DELETE":
-		dbe.deleteData(w, r, tableName, parts[1])
+		dbe.deleteData(w, r, tableName, splitPath[1])
 	}
 }
 
-func (dbe *DbExplorer) showTables(w http.ResponseWriter) {
+func (dbe *DBExplorer) showTable(w http.ResponseWriter) {
 	var tableNames []string
 	for tableName := range dbe.tables {
 		tableNames = append(tableNames, tableName)
@@ -147,7 +130,15 @@ func (dbe *DbExplorer) showTables(w http.ResponseWriter) {
 	json.NewEncoder(w).Encode(response)
 }
 
-func (dbe *DbExplorer) showData(w http.ResponseWriter, r *http.Request, tableName string) {
+func (dbe *DBExplorer) sendError(w http.ResponseWriter, message string, code int) {
+	w.WriteHeader(code)
+	response := map[string]interface{}{
+		"error": message,
+	}
+	json.NewEncoder(w).Encode(response)
+}
+
+func (dbe *DBExplorer) showData(w http.ResponseWriter, r *http.Request, tableName string) {
 	limit := 5
 	offset := 0
 
@@ -168,7 +159,6 @@ func (dbe *DbExplorer) showData(w http.ResponseWriter, r *http.Request, tableNam
 		dbe.sendError(w, err.Error(), 500)
 		return
 	}
-	defer rows.Close()
 
 	records, err := dbe.readRows(rows)
 	if err != nil {
@@ -184,11 +174,11 @@ func (dbe *DbExplorer) showData(w http.ResponseWriter, r *http.Request, tableNam
 	json.NewEncoder(w).Encode(response)
 }
 
-func (dbe *DbExplorer) showDataById(w http.ResponseWriter, r *http.Request, tableName, idStr string) {
+func (dbe *DBExplorer) showDataById(w http.ResponseWriter, r *http.Request, tableName, idStr string) {
 	table := dbe.tables[tableName]
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		dbe.sendError(w, "invalid id", 400)
+		dbe.sendError(w, "Invalid id", 400)
 		return
 	}
 
@@ -198,7 +188,6 @@ func (dbe *DbExplorer) showDataById(w http.ResponseWriter, r *http.Request, tabl
 		dbe.sendError(w, err.Error(), 500)
 		return
 	}
-	defer rows.Close()
 
 	records, err := dbe.readRows(rows)
 	if err != nil {
@@ -219,35 +208,26 @@ func (dbe *DbExplorer) showDataById(w http.ResponseWriter, r *http.Request, tabl
 	json.NewEncoder(w).Encode(response)
 }
 
-func (dbe *DbExplorer) createData(w http.ResponseWriter, r *http.Request, tableName string) {
+func (dbe *DBExplorer) createData(w http.ResponseWriter, r *http.Request, tableName string) {
 	table := dbe.tables[tableName]
 
 	var data map[string]interface{}
 	json.NewDecoder(r.Body).Decode(&data)
 
-	var fields []string
+	var keys []string
 	var values []interface{}
 
 	for _, col := range table.Columns {
-		if col.IsPrimary && col.IsAuto {
-			continue
-		}
-
 		if value, exists := data[col.Name]; exists {
-			if value == nil && !col.Nullable {
+			if value == nil && !col.IsNullable {
 				dbe.sendError(w, fmt.Sprintf("field %s have invalid type", col.Name), 400)
 				return
 			}
 
-			if value != nil && !dbe.isValidType(value, col.Type) {
-				dbe.sendError(w, fmt.Sprintf("field %s have invalid type", col.Name), 400)
-				return
-			}
-
-			fields = append(fields, "`"+col.Name+"`")
+			keys = append(keys, "`"+col.Name+"`")
 			values = append(values, value)
-		} else if !col.Nullable {
-			fields = append(fields, "`"+col.Name+"`")
+		} else if !col.IsNullable {
+			keys = append(keys, "`"+col.Name+"`")
 			if strings.Contains(col.Type, "int") {
 				values = append(values, 0)
 			} else {
@@ -259,14 +239,13 @@ func (dbe *DbExplorer) createData(w http.ResponseWriter, r *http.Request, tableN
 	placeholders := strings.Repeat("?,", len(values))
 	placeholders = placeholders[:len(placeholders)-1]
 	query := fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s)",
-		tableName, strings.Join(fields, ","), placeholders)
+		tableName, strings.Join(keys, ","), placeholders)
 
 	result, err := dbe.db.Exec(query, values...)
 	if err != nil {
 		dbe.sendError(w, err.Error(), 500)
 		return
 	}
-
 	lastID, _ := result.LastInsertId()
 
 	var response = map[string]interface{}{
@@ -277,7 +256,7 @@ func (dbe *DbExplorer) createData(w http.ResponseWriter, r *http.Request, tableN
 	json.NewEncoder(w).Encode(response)
 }
 
-func (dbe *DbExplorer) updateData(w http.ResponseWriter, r *http.Request, tableName, idStr string) {
+func (dbe *DBExplorer) updateData(w http.ResponseWriter, r *http.Request, tableName, idStr string) {
 	table := dbe.tables[tableName]
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
@@ -288,7 +267,7 @@ func (dbe *DbExplorer) updateData(w http.ResponseWriter, r *http.Request, tableN
 	var data map[string]interface{}
 	json.NewDecoder(r.Body).Decode(&data)
 
-	var setParts []string
+	var setSplits []string
 	var values []interface{}
 
 	for fieldName, value := range data {
@@ -304,33 +283,28 @@ func (dbe *DbExplorer) updateData(w http.ResponseWriter, r *http.Request, tableN
 			continue
 		}
 
-		if column.IsPrimary {
+		if column.IsPrimaryKey {
 			dbe.sendError(w, fmt.Sprintf("field %s have invalid type", fieldName), 400)
 			return
 		}
 
-		if value == nil && !column.Nullable {
+		if value == nil && !column.IsNullable {
 			dbe.sendError(w, fmt.Sprintf("field %s have invalid type", fieldName), 400)
 			return
 		}
 
-		if value != nil && !dbe.isValidType(value, column.Type) {
-			dbe.sendError(w, fmt.Sprintf("field %s have invalid type", fieldName), 400)
-			return
-		}
-
-		setParts = append(setParts, fmt.Sprintf("`%s` = ?", fieldName))
+		setSplits = append(setSplits, fmt.Sprintf("`%s` = ?", fieldName))
 		values = append(values, value)
 	}
 
-	if len(setParts) == 0 {
+	if len(setSplits) == 0 {
 		dbe.sendError(w, "nothing to update", 400)
 		return
 	}
 
 	values = append(values, id)
 	query := fmt.Sprintf("UPDATE `%s` SET %s WHERE `%s` = ?",
-		tableName, strings.Join(setParts, ", "), table.PrimaryKey)
+		tableName, strings.Join(setSplits, ", "), table.PrimaryKey)
 
 	result, err := dbe.db.Exec(query, values...)
 	if err != nil {
@@ -348,7 +322,7 @@ func (dbe *DbExplorer) updateData(w http.ResponseWriter, r *http.Request, tableN
 	json.NewEncoder(w).Encode(response)
 }
 
-func (dbe *DbExplorer) deleteData(w http.ResponseWriter, r *http.Request, tableName, idStr string) {
+func (dbe *DBExplorer) deleteData(w http.ResponseWriter, r *http.Request, tableName, idStr string) {
 	table := dbe.tables[tableName]
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
@@ -373,7 +347,7 @@ func (dbe *DbExplorer) deleteData(w http.ResponseWriter, r *http.Request, tableN
 	json.NewEncoder(w).Encode(response)
 }
 
-func (dbe *DbExplorer) readRows(rows *sql.Rows) ([]map[string]interface{}, error) {
+func (dbe *DBExplorer) readRows(rows *sql.Rows) ([]map[string]interface{}, error) {
 	columns, err := rows.Columns()
 	if err != nil {
 		return nil, err
@@ -412,34 +386,4 @@ func (dbe *DbExplorer) readRows(rows *sql.Rows) ([]map[string]interface{}, error
 	}
 
 	return result, nil
-}
-
-func (dbe *DbExplorer) isValidType(value interface{}, colType string) bool {
-	if value == nil {
-		return true
-	}
-
-	colType = strings.ToLower(colType)
-
-	switch value.(type) {
-	case string:
-		return strings.Contains(colType, "varchar") ||
-			strings.Contains(colType, "text") ||
-			strings.Contains(colType, "char")
-	case float64:
-		return strings.Contains(colType, "int") ||
-			strings.Contains(colType, "float") ||
-			strings.Contains(colType, "double") ||
-			strings.Contains(colType, "decimal")
-	default:
-		return false
-	}
-}
-
-func (dbe *DbExplorer) sendError(w http.ResponseWriter, message string, code int) {
-	w.WriteHeader(code)
-	response := map[string]interface{}{
-		"error": message,
-	}
-	json.NewEncoder(w).Encode(response)
 }
